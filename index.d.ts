@@ -16,6 +16,26 @@ export interface CreateCopierOptions {
   object?: InternalCopier<Record<string, any>>;
   regExp?: InternalCopier<RegExp>;
   set?: InternalCopier<Set<any>>;
+  /**
+   * The maximum number of nested objects to traverse before throwing a
+   * `MaxDepthExceededError`. Pass `Infinity` to traverse without a limit.
+   *
+   * @default 1000
+   */
+  maxDepth?: number;
+}
+
+/**
+ * Error thrown when the copier traverses deeper than the configured `maxDepth`.
+ *
+ * @note
+ * Extends `RangeError` for backwards compatibility, since exceeding the maximum depth
+ * previously surfaced as a native `RangeError` from stack exhaustion.
+ */
+export class MaxDepthExceededError extends RangeError {
+  readonly maxDepth: number;
+
+  constructor(maxDepth: number);
 }
 
 type InternalCopier<Value> = (value: Value, state: State) => Value;
@@ -24,6 +44,11 @@ export interface State {
   Constructor: any;
   cache: Cache;
   copier: InternalCopier<any>;
+  /**
+   * The number of nested objects currently being copied, used to bound traversal
+   * of deeply-nested values before the call stack is exhausted.
+   */
+  depth: number;
   prototype: any;
 }
 

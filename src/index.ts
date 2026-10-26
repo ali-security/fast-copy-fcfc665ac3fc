@@ -15,11 +15,12 @@ import {
   copySetLoose,
   copySetStrict,
 } from './copier';
-import { createCache, getTag } from './utils';
+import { createCache, getTag, MaxDepthExceededError } from './utils';
 
 import type { InternalCopier, State } from './copier';
 
 export type { State } from './copier';
+export { MaxDepthExceededError } from './utils';
 
 const { isArray } = Array;
 const { assign } = Object;
@@ -36,7 +37,24 @@ export interface CreateCopierOptions {
   object?: InternalCopier<Record<string, any>>;
   regExp?: InternalCopier<RegExp>;
   set?: InternalCopier<Set<any>>;
+  /**
+   * The maximum number of nested objects to traverse before throwing a
+   * `MaxDepthExceededError`. Pass `Infinity` to traverse without a limit.
+   *
+   * @default 1000
+   */
+  maxDepth?: number;
 }
+
+/**
+ * The maximum depth traversed when none is provided.
+ *
+ * @note
+ * This is deliberately below the depth at which the native call stack is exhausted, so that
+ * untrusted, deeply-nested values fail with a catchable, descriptive error instead of a raw
+ * `RangeError`.
+ */
+const DEFAULT_MAX_DEPTH = 1000;
 
 const DEFAULT_LOOSE_OPTIONS: Required<CreateCopierOptions> = {
   array: copyArrayLoose,
@@ -49,6 +67,7 @@ const DEFAULT_LOOSE_OPTIONS: Required<CreateCopierOptions> = {
   object: copyObjectLoose,
   regExp: copyRegExp,
   set: copySetLoose,
+  maxDepth: DEFAULT_MAX_DEPTH,
 };
 const DEFAULT_STRICT_OPTIONS: Required<CreateCopierOptions> = assign(
   {},
@@ -105,6 +124,10 @@ export function createCopier(options: CreateCopierOptions) {
   const normalizedOptions = assign({}, DEFAULT_LOOSE_OPTIONS, options);
   const tagSpecificCopiers = getTagSpecificCopiers(normalizedOptions);
   const { Array: array, Object: object } = tagSpecificCopiers;
+  const maxDepth =
+    normalizedOptions.maxDepth == null
+      ? DEFAULT_MAX_DEPTH
+      : normalizedOptions.maxDepth;
 
   function copier(value: any, state: State): any {
     state.prototype = state.Constructor = undefined;
@@ -117,26 +140,36 @@ export function createCopier(options: CreateCopierOptions) {
       return state.cache.get(value);
     }
 
+    // Bound the traversal of nested objects, so that values nested more deeply than the
+    // call stack can handle fail with a descriptive error instead of a raw `RangeError`.
+    if (++state.depth > maxDepth) {
+      throw new MaxDepthExceededError(maxDepth);
+    }
+
     state.prototype = getPrototypeOf(value);
     state.Constructor = state.prototype && state.prototype.constructor;
 
+    let clone: any;
+
     // plain objects
     if (!state.Constructor || state.Constructor === Object) {
-      return object(value, state);
+      clone = object(value, state);
+    } else if (isArray(value)) {
+      // arrays
+      clone = array(value, state);
+    } else {
+      const tagSpecificCopier = tagSpecificCopiers[getTag(value)];
+
+      if (tagSpecificCopier) {
+        clone = tagSpecificCopier(value, state);
+      } else {
+        clone = typeof value.then === 'function' ? value : object(value, state);
+      }
     }
 
-    // arrays
-    if (isArray(value)) {
-      return array(value, state);
-    }
+    --state.depth;
 
-    const tagSpecificCopier = tagSpecificCopiers[getTag(value)];
-
-    if (tagSpecificCopier) {
-      return tagSpecificCopier(value, state);
-    }
-
-    return typeof value.then === 'function' ? value : object(value, state);
+    return clone;
   }
 
   return function copy<Value>(value: Value): Value {
@@ -144,6 +177,7 @@ export function createCopier(options: CreateCopierOptions) {
       Constructor: undefined,
       cache: createCache(),
       copier,
+      depth: 0,
       prototype: undefined,
     });
   };
