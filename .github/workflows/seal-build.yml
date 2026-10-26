@@ -1,0 +1,38 @@
+name: seal-build
+
+# Upstream fast-copy ships no CI; this workflow mirrors the package.json
+# scripts: `yarn build` (rollup + tsc for esm/cjs/umd/min) and `yarn test`
+# (NODE_PATH=. jest), then packs the tarball the way the release did (npm 9.5.1).
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Jest test-name pattern (-t); empty runs the full suite'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18.19.1'
+      - name: Install
+        run: yarn install --frozen-lockfile
+      - name: Build
+        run: yarn build
+      - name: Test
+        run: yarn test ${{ inputs.test-filter && format('-t "{0}"', inputs.test-filter) || '' }}
+      - name: Pack
+        run: |
+          mkdir -p pack-output
+          npx --yes npm@9.5.1 pack --ignore-scripts --pack-destination pack-output
+          ls -l pack-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fast-copy-tgz
+          path: pack-output/*.tgz
+          if-no-files-found: error
